@@ -6,10 +6,157 @@
 #include <cryptoTools/Network/Channel.h>
 #include <cryptoTools/Network/Session.h>
 #include <cryptoTools/Network/IOService.h>
-
+#include "flage_parser.h"
 
 using namespace osuCrypto;
 
+#define Log(s) std::cout << __FILE__ << ":" << __LINE__ << ":" << s << std::endl;
+
+DEFINE_i32(client_tcp_port, 444);
+DEFINE_str(client_tcp_address, "172.18.17.101");
+DEFINE_str(ca_path, "ca.crt");
+
+#if defined(ENABLE_WOLFSSL) || defined(ENABLE_BOOST_OPENSSL)
+void network_client() {
+    IOService ios(4);
+    ios.showErrorMessages(true);
+    auto ip = flage_client_tcp_address;
+    auto port = flage_client_tcp_port;
+    std::string sni_name = "tcp.owl.basebit.me";
+    std::string sessionHint = "party0_party1";
+
+    error_code ec;
+    TLSContext cctx;
+    cctx.init(TLSContext::Mode::Client, ec);
+    cctx.loadCertFile(flage_ca_path, ec);
+    if (ec) {Log("error:" + ec.message());}
+    cctx.setSNIName(sni_name, ec);
+    if (ec) {Log("error:" + ec.message());}
+    cctx.loadKeyPairFile("/export/certs/server-cert.pem", "/export/certs/server-key.pem", ec);
+    InitRealSession(ios, ip, port, SessionMode::Server);
+    AddVirToRealSessionMapping(SessionMode::Server, ip, port, ip, port);
+    Session client(ios, ip, port, SessionMode::Client, cctx, sessionHint);
+    /*
+    // Session client(ios, ip, port, SessionMode::Client, sessionHint);
+    */
+
+    auto chl = client.addChannel();
+    std::chrono::milliseconds timeout(100);
+    bool open = chl.waitForConnection(timeout);
+
+    chl.onConnect([](const error_code& ec) {
+        if (ec)
+            std::cout << "chl0 failed to connect: " << ec.message() << std::endl;
+        });
+
+    if (open == false)
+    {
+        chl.waitForConnection();
+    }
+    int i = 1;
+    while (true) {
+        std::string data("client");
+        chl.send(data);
+        std::cout << "send:" << data << std::endl;
+        sleep(1);
+        i++;
+    }
+}
+
+void print_vec(const std::vector<int>& vec) {
+    std::cout << "--------vec size:" << vec.size() << "---------" << std::endl;
+    for (auto& v : vec) {
+        std::cout << v << ", ";
+    }
+    std::cout << std::endl;
+}
+void network_server() {
+    IOService ios(4);
+    ios.showErrorMessages(true);
+    auto ip = std::string("0.0.0.0");
+    auto port = 8088;
+
+    std::string sessionHint = "party0_party1";
+
+    // Create a pair of sessions that connect to eachother. Note that
+    // the sessionHint parameter is options.
+    error_code ec;
+    TLSContext sctx;
+    sctx.init(TLSContext::Mode::Server, ec);
+    sctx.requestClientCert(ec);
+    sctx.loadCertFile("/export/certs/ca-cert.pem", ec);
+    sctx.loadKeyPairFile("/export/certs/server-cert.pem", "/export/certs/server-key.pem", ec);
+    // Session server(ios, ip, port, SessionMode::Server, sctx, sessionHint);
+    InitRealSession(ios, ip, port, SessionMode::Server);
+    AddVirToRealSessionMapping(SessionMode::Server, ip, port, ip, port);
+    Session server(ios, ip, port, SessionMode::Server, sessionHint);
+
+    // Actually get the channe/export/certs/ca-cert.peml that can be used to communicate on.
+    Channel chl = server.addChannel();
+
+    while(true) {
+        std::string dest;
+        chl.recv(dest);
+        std::cout << dest << std::endl;
+    }
+}
+void network_ssl() {
+
+    Log(">>>>>>>>>>>>>>>>>>>>>>");
+    IOService ios(4);
+    ios.showErrorMessages(true);
+    auto ip = std::string("127.0.0.1");
+    auto port = 1212;
+    error_code ec;
+    TLSContext sctx, cctx;
+
+    sctx.init(TLSContext::Mode::Server, ec);
+    if (ec) {Log("error:" + ec.message());}
+
+    sctx.requestClientCert(ec);
+    if (ec) {Log("error:" + ec.message());}
+    //sctx.loadCertFile("ca.pem", ec);
+    if (ec) {Log("error:" + ec.message());}
+    sctx.loadKeyPairFile("server.pem", "server.pem", ec);
+    if (ec) {Log("error:" + ec.message());}
+
+    cctx.init(TLSContext::Mode::Client, ec);
+    if (ec) {Log("error:" + ec.message());}
+    cctx.loadCertFile("ca.pem", ec);
+    if (ec) {Log("error:" + ec.message());}
+    if (ec) {Log("error:" + ec.message());}
+
+    // InitRealSession(ios, ip, port, SessionMode::Server, sctx);
+    // InitRealSession(ios, ip, port, SessionMode::Client, cctx);
+    Session tlsSes0(ios, ip, port, SessionMode::Server, sctx);
+    Session tlsSes1(ios, ip, port, SessionMode::Client, cctx);
+    /*
+    Session tlsSes0(ios, ip, port, SessionMode::Server);
+    Session tlsSes1(ios, ip, port, SessionMode::Client);
+    */
+
+    Channel tlsChl0 = tlsSes0.addChannel("test", "test");
+    Channel tlsChl1 = tlsSes1.addChannel("test", "test");
+
+    tlsChl0.waitForConnection();
+
+    std::string commonName = tlsChl0.commonName();
+    std::vector<int> vec{0, 1, 2};
+    tlsChl0.send(vec);
+    std::vector<int> dest;
+    tlsChl1.recv(dest);
+    print_vec(dest);
+
+    StopSessions();
+    auto fu = std::async([&]() {
+        tlsChl0.close();
+        return true;
+    });
+    tlsChl1.close();
+    tlsSes0.stop();
+    tlsSes1.stop();
+}
+#endif
 
 void networkTutorial()
 {

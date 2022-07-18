@@ -64,6 +64,10 @@ if(ENABLE_WOLFSSL)
   target_link_libraries(cryptoTools ${WOLFSSL_LIB})
 endif(ENABLE_WOLFSSL)
 
+if(ENABLE_BOOST_OPENSSL)
+target_link_libraries(cryptoTools ssl crypto)
+endif(ENABLE_BOOST_OPENSSL)
+
 ## Boost
 ###########################################################################
 

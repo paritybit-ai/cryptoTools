@@ -63,11 +63,14 @@ option(ENABLE_SODIUM    "use libsodium" OFF)
 option(ENABLE_CIRCUITS  "compile the circuit module" OFF)
 option(ENABLE_NET_LOG   "compile with network logging" OFF)
 option(ENABLE_WOLFSSL   "conpiler with WolfSSL enabled" OFF)
+option(ENABLE_BOOST_OPENSSL    "conpiler with ENABLE_BOOST_OPENSSL enabled" ON)
 option(ENABLE_SSE       "compile with SSE instrctions" ON)
 option(ENABLE_BOOST     "compile with BOOST networing integration" ON)
 
 
 option(FETCH_AUTO      "automaticly download and build dependancies" OFF)
+
+ADD_DEFINITIONS(-DHAVE_SNI)
 
 #option(FETCH_SPAN_LITE		"download and build span" OFF))
 EVAL(FETCH_SPAN_LITE_IMPL 

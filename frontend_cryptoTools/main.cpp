@@ -6,6 +6,7 @@
 #include <cryptoTools/Common/Matrix.h>
 #include "cryptoTools/Common/CuckooIndex.h"
 #include "cryptoTools/Common/CLP.h"
+#include "Tutorials/flage_parser.h"
 using namespace osuCrypto;
 #include <sstream>
 #include <fstream>
@@ -140,14 +141,59 @@ void print_aes_bristol()
 }
 #endif
 
+#ifdef ENABLE_WOLFSSL
+namespace benchmark {
+extern void bench_client();
+extern void bench_server();
+}
+namespace port_mapping {
+extern void client();
+extern void server();
+}
+#else
+namespace benchmark {
+void bench_client() {}
+void bench_server() {}
+}
+namespace port_mapping {
+void client() {}
+void server() {}
+}
+#endif
+namespace osuCrypto {
+    void SetPortMapping(bool is_open);
+}
 int main(int argc, char** argv)
 {
 
     CLP cmd(argc, argv);
+    ParseCmdFlags(cmd);
 
+    osuCrypto::SetPortMapping(false);
     if (cmd.isSet("tut"))
     {
         networkTutorial();
+    }
+    if (cmd.isSet("ssl")) {
+        network_ssl();
+    }
+    else if (cmd.isSet("client")) {
+        network_client();
+    }
+    else if (cmd.isSet("server")) {
+        network_server();
+    }
+    else if (cmd.isSet("bench_client")) {
+        benchmark::bench_client();
+    }
+    else if (cmd.isSet("bench_server")) {
+        benchmark::bench_server();
+    }
+    else if (cmd.isSet("port_client")) {
+        port_mapping::client();
+    }
+    else if (cmd.isSet("port_server")) {
+        port_mapping::server();
     }
     else if(cmd.isSet("u"))
     {

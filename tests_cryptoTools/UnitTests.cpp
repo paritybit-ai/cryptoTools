@@ -46,10 +46,12 @@ namespace tests_cryptoTools
         th.add("BtNetwork_socketAdapter_test            ", BtNetwork_socketAdapter_test);
         th.add("BtNetwork_BasicSocket_test              ", BtNetwork_BasicSocket_test);
         
+        /*
         th.add("wolfSSL_echoServer_test                 ", wolfSSL_echoServer_test);
         th.add("wolfSSL_mutualAuth_test                 ", wolfSSL_mutualAuth_test);
         th.add("wolfSSL_channel_test                    ", wolfSSL_channel_test);
         th.add("wolfSSL_CancelChannel_Test              ", wolfSSL_CancelChannel_Test);
+        */
 
         th.add("block_operation_test                    ", block_operation_test);
         th.add("AES                                     ", AES_EncDec_Test);

@@ -18,6 +18,7 @@
 #include <deque>
 
 #include "TLS.h"
+#include "OpenTLS.h"
 
 namespace osuCrypto {
 
@@ -396,7 +397,7 @@ namespace osuCrypto {
         void retryConnect(const error_code& ec);
 
         char mRecvChar;
-        void setSocket(std::unique_ptr<BoostSocketInterface> socket, const error_code& ec);
+        void setSocket(std::unique_ptr<Socket> socket, const error_code& ec);
 
         void finalize(std::unique_ptr<SocketInterface> sock, error_code ec);
 
@@ -422,13 +423,7 @@ namespace osuCrypto {
 
         boost::asio::strand<boost::asio::io_context::executor_type>& mStrand;
         std::vector<u8> mSendBuffer;
-        std::unique_ptr<BoostSocketInterface> mSock;
-
-#ifdef ENABLE_WOLFSSL
-        void validateTLS(const error_code& ec);
-        std::unique_ptr<TLSSocket> mTLSSock;
-        block mTLSSessionIDBuf;
-#endif
+        std::unique_ptr<Socket> mSock;
 
         double mBackoff = 1;
         bool mFinalized = false, mCanceled = false, mIsFirst;

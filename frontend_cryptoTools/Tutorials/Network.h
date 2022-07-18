@@ -8,7 +8,20 @@
 #include <mutex>
 #include <memory>
 #include "cryptoTools/Network/SocketAdapter.h"
+#include "cryptoTools/Common/CLP.h"
+
 void networkTutorial();
+#if defined(ENABLE_WOLFSSL) || defined(ENABLE_BOOST_OPENSSL)
+void ParseCmd(osuCrypto::CLP cmd);
+void network_client();
+void network_server();
+void network_ssl();
+#else
+inline void ParseCmd(osuCrypto::CLP cmd) {}
+inline void network_client() {}
+inline void network_server() {}
+inline void network_ssl() {}
+#endif
 
 namespace osuCrypto
 {

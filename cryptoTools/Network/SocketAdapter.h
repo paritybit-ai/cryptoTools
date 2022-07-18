@@ -56,6 +56,7 @@ namespace osuCrypto
         // OPTIONAL -- no-op close is default. Will be called right after 
         virtual void async_accept(completion_handle&& fn)
         {
+            std::cout << "socket interface async_accept-----------" << std::endl;
             error_code ec;
             fn(ec);
         }
@@ -63,6 +64,7 @@ namespace osuCrypto
         // OPTIONAL -- no-op close is default. Will be called when all Channels that refernece it are destructed/
         virtual void async_connect(completion_handle&& fn)
         {
+            std::cout << "socket interface async_connect-----------" << std::endl;
             error_code ec;
             fn(ec);
         }
@@ -320,19 +322,39 @@ namespace osuCrypto
 
     };
 
+    class Socket : public SocketInterface {
+    public:
+        Socket(boost::asio::ip::tcp::socket&& ios)
+            : mSock(std::forward<boost::asio::ip::tcp::socket>(ios)) {
+        }
+        Socket(boost::asio::io_context& ios) : mSock(ios) {
+        }
+        Socket() = default;
+        virtual ~Socket() = default;
 
+        virtual void async_connect(const boost::asio::ip::tcp::resolver::results_type& endpoints, completion_handle&& cb) {
+        // virtual void async_connect(const boost::asio::ip::tcp::endpoint& endpoint, completion_handle&& cb) {
+            mSock.async_connect(*endpoints, cb);
+        }
+        virtual void async_connect(const boost::asio::ip::tcp::endpoint& endpoint, completion_handle&& cb) {
+            mSock.async_connect(endpoint, cb);
+        }
+        virtual void async_accept(boost::asio::ip::tcp::acceptor& acceptor, completion_handle&& cb) {
+            acceptor.async_accept(mSock, cb);
+        }
 
-    class BoostSocketInterface : public SocketInterface
+        boost::asio::ip::tcp::socket mSock;
+    };
+
+    class BoostSocketInterface : public Socket
     {
     public:
-        boost::asio::ip::tcp::socket mSock;
-
 #ifndef BOOST_ASIO_HAS_MOVE
 #error "require move"
 #endif
 
         BoostSocketInterface(boost::asio::ip::tcp::socket&& ios)
-            : mSock(std::forward<boost::asio::ip::tcp::socket>(ios))
+            : Socket(std::forward<boost::asio::ip::tcp::socket>(ios))
         {
         }
 

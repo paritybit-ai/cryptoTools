@@ -105,8 +105,18 @@ namespace osuCrypto
         // the Accept will receive the socket's name. At this point it will
         // be converted to a NamedSocket and matched with a Channel.
         struct PendingSocket {
-            PendingSocket(boost::asio::io_service& ios) : mSock(ios) {}
-            boost::asio::ip::tcp::socket mSock;
+            PendingSocket(boost::asio::io_service& ios, TLSContext& ctx) {
+                #if defined(ENABLE_WOLFSSL) || defined(ENABLE_BOOST_OPENSSL)
+                if (ctx) {
+                    mSock.reset(new TLSSocket(ios, ctx));
+                } else 
+                #endif
+                {
+                    mSock.reset(new BoostSocketInterface(boost::asio::ip::tcp::socket(ios)));
+                }
+            }
+            // boost::asio::ip::tcp::socket mSock;
+            std::unique_ptr<Socket> mSock;
             std::string mBuff;
 //#ifdef ENABLE_NET_LOG
             u64 mIdx = 0;
@@ -120,7 +130,7 @@ namespace osuCrypto
 			NamedSocket(NamedSocket&&) = default;
 
 			std::string mLocalName, mRemoteName;
-			std::unique_ptr<BoostSocketInterface> mSocket;
+			std::unique_ptr<Socket> mSocket;
 		};
 
         // A group of sockets from a single remote session which 
@@ -243,6 +253,9 @@ namespace osuCrypto
         // or active Channels which are waiting on matching sockets.
 		GroupList mGroups;
 
+        // yc add, only once session can bind with the acceptor
+        std::shared_ptr<SessionBase> mSession;
+
 		// A map: SessionName -> { socketGroup1, ..., socketGroupN } which all have the 
         // same session name (hint) but a unique ID. These groups of sockets have not been 
         // matched with a local Session/Channel. Then this happens the SocketGroup is merged 
@@ -264,7 +277,7 @@ namespace osuCrypto
         // and matches the name with a compatable ChannelBase. SessionName is not unique,
         // the remote and local name of the channel itself will be used. Note SessionID
         // will always be unique.
-		void asyncSetSocket(std::string name,std::unique_ptr<BoostSocketInterface> handel);
+		void asyncSetSocket(std::string name, std::unique_ptr<Socket> s);
 
         // Let the acceptor know that this channel is looking for a socket
         // with a matching name.

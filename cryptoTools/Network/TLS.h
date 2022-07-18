@@ -1,7 +1,8 @@
 #pragma once
 #include "cryptoTools/Common/config.h"
+#include "cryptoTools/Network/TLSUtil.h"
 
-#if defined(ENABLE_WOLFSSL) && defined(ENABLE_BOOST)
+#if defined(ENABLE_WOLFSSL) && defined(ENABLE_BOOST) && !defined(ENABLE_BOOST_OPENSSL)
 
 #include <string>
 #include <boost/system/error_code.hpp>
@@ -19,7 +20,7 @@
 #define WOLFSSL_LIB
 #endif
 
-#include <wolfssl/ssl.h>
+// #include <wolfssl/ssl.h>
 #undef ALIGN16
 
 #ifdef max
@@ -37,9 +38,13 @@
 #define WOLFSSL_LOGGING
 #endif
 
+struct WOLFSSL_METHOD;
+struct WOLFSSL_CTX;
+struct WOLFSSL_X509;
+struct WOLFSSL;
+
 namespace osuCrypto
 {
-    using error_code = boost::system::error_code;
     error_code readFile(const std::string& file, std::vector<u8>& buffer);
 
     enum class WolfSSL_errc
@@ -47,28 +52,16 @@ namespace osuCrypto
         Success = 0,
         Failure = 1
     };
-    enum class TLS_errc
-    {
-        Success = 0,
-        Failure,
-        ContextNotInit,
-        ContextAlreadyInit,
-        ContextFailedToInit,
-        OnlyValidForServerContext,
-        SessionIDMismatch
-    };
 }
 
 namespace boost {
     namespace system {
         template <>
         struct is_error_code_enum<osuCrypto::WolfSSL_errc> : true_type {};
-        template <>
-        struct is_error_code_enum<osuCrypto::TLS_errc> : true_type {};
     }
 }
 
-namespace { // anonymous namespace
+namespace cryptoTools_network_tls {
 
     struct WolfSSLErrCategory : boost::system::error_category
     {
@@ -77,77 +70,23 @@ namespace { // anonymous namespace
             return "osuCrypto_WolfSSL";
         }
 
-        std::string message(int err) const override
-        {
-            std::array<char, WOLFSSL_MAX_ERROR_SZ> buffer;
-            if (err == 0) return "Success";
-            if (err == 1) return "Failure";
-            return wolfSSL_ERR_error_string(err, buffer.data());
-        }
+        std::string message(int err) const override;
     };
 
     const WolfSSLErrCategory WolfSSLCategory{};
-
-
-    struct TLSErrCategory : boost::system::error_category
-    {
-        const char* name() const noexcept override
-        {
-            return "osuCrypto_TLS";
-        }
-
-        std::string message(int err) const override
-        {
-            switch (static_cast<osuCrypto::TLS_errc>(err))
-            {
-            case osuCrypto::TLS_errc::Success:
-                return "Success";
-            case osuCrypto::TLS_errc::Failure:
-                return "Generic Failure";
-            case osuCrypto::TLS_errc::ContextNotInit:
-                return "TLS context not init";
-            case osuCrypto::TLS_errc::ContextAlreadyInit:
-                return "TLS context is already init";
-            case osuCrypto::TLS_errc::ContextFailedToInit:
-                return "TLS context failed to init";
-            case osuCrypto::TLS_errc::OnlyValidForServerContext:
-                return "Operation is only valid for server initialized TLC context";
-            case osuCrypto::TLS_errc::SessionIDMismatch:
-                return "Critical error on connect. Likely active attack by thirdparty";
-            default:
-                return "unknown error";
-            }
-        }
-    };
-
-    const TLSErrCategory TLSCategory{};
-
-} // anonymous namespace
+} // namespace cryptoTools_network_tls
 
 namespace osuCrypto
 {
+    using namespace cryptoTools_network_tls;
     inline error_code make_error_code(WolfSSL_errc e)
     {
         auto ee = static_cast<int>(e);
         return { ee, WolfSSLCategory };
     }
 
-    inline error_code make_error_code(TLS_errc e)
-    {
-        auto ee = static_cast<int>(e);
-        return { ee, TLSCategory };
-    }
+    inline error_code wolfssl_error_code(int ret);
 
-
-    inline error_code wolfssl_error_code(int ret)
-    {
-        switch (ret)
-        {
-        case WOLFSSL_SUCCESS: return make_error_code(WolfSSL_errc::Success);
-        case WOLFSSL_FAILURE: return make_error_code(WolfSSL_errc::Failure);
-        default: return make_error_code(WolfSSL_errc(ret));
-        }
-    }
 
     struct WolfContext
     {
@@ -178,8 +117,10 @@ namespace osuCrypto
 
         void loadKeyPairFile(std::string pkPath, std::string skPath, error_code& ec);
         void loadKeyPair(span<u8> pkData, span<u8> skData, error_code& ec);
+        void setSNIName(const std::string& sni_name, error_code& ec);
 
         void requestClientCert(error_code& ec);
+        void NoneVerify();
 
 
         bool isInit() const {
@@ -206,40 +147,23 @@ namespace osuCrypto
 
     using TLSContext = WolfContext;
 
-
     struct WolfCertX509
     {
         WOLFSSL_X509* mCert = nullptr;
 
-        std::string commonName()
-        {
-            return wolfSSL_X509_get_subjectCN(mCert);
-        }
+        std::string commonName();
 
-        std::string notAfter()
-        {
-            WOLFSSL_ASN1_TIME* ptr = wolfSSL_X509_get_notAfter(mCert);
-            std::array<char, 1024> buffer;
-            wolfSSL_ASN1_TIME_to_string(ptr, buffer.data(), buffer.size());
-            return buffer.data();
-        }
+        std::string notAfter();
 
 
-        std::string notBefore()
-        {
-            WOLFSSL_ASN1_TIME* ptr = wolfSSL_X509_get_notBefore(mCert);
-            std::array<char, 1024> buffer;
-            wolfSSL_ASN1_TIME_to_string(ptr, buffer.data(), buffer.size());
-            return buffer.data();
-        }
+        std::string notBefore();
     };
 
-    struct WolfSocket : public SocketInterface, public LogAdapter
+    struct WolfSocket : public Socket, public LogAdapter
     {
 
         using buffer = boost::asio::mutable_buffer;
 
-        boost::asio::ip::tcp::socket mSock;
         boost::asio::strand<boost::asio::io_context::executor_type> mStrand;
         boost::asio::io_context& mIos;
         WOLFSSL* mSSL = nullptr;
@@ -276,11 +200,7 @@ namespace osuCrypto
         WolfSocket(WolfSocket&&) = delete;
         WolfSocket(const WolfSocket&) = delete;
 
-        ~WolfSocket()
-        {
-            close();
-            if (mSSL) wolfSSL_free(mSSL);
-        }
+        ~WolfSocket();
 
         void close() override;
 
@@ -314,7 +234,7 @@ namespace osuCrypto
 
         void sendNext();
 
-        int sslRquestSendCB(char* buf, int size);
+        int sslRequestSendCB(char* buf, int size);
 
         void recv(
             span<buffer> buffers,
@@ -324,15 +244,19 @@ namespace osuCrypto
 
         void recvNext();
 
-        int sslRquestRecvCB(char* buf, int size);
+        int sslRequestRecvCB(char* buf, int size);
 
 
-        void connect(error_code& ec);
-        void async_connect(completion_handle&& cb) override;
+        // ssl connect
+        // void connect(error_code& ec);
+        // socket connect + ssl connect
+        void async_connect(const boost::asio::ip::tcp::endpoint& address, completion_handle&& cb) override;
         void connectNext();
 
-        void accept(error_code& ec);
-        void async_accept(completion_handle&& cb) override;
+        // ssl accept
+        // void accept(error_code& ec);
+        // socket accept + ssl accept
+        void async_accept(boost::asio::ip::tcp::acceptor& acceptor, completion_handle&& cb) override;
         void acceptNext();
 
 #ifdef WOLFSSL_LOGGING
@@ -344,7 +268,7 @@ namespace osuCrypto
             //lout << "in recv cb with " << std::hex << u64(ctx) << std::endl;
             WolfSocket& sock = *(WolfSocket*)ctx;
             assert(sock.mSSL == ssl);
-            return sock.sslRquestRecvCB(buf, size);
+            return sock.sslRequestRecvCB(buf, size);
         }
 
         static int sendCallback(WOLFSSL* ssl, char* buf, int size, void* ctx)
@@ -352,7 +276,7 @@ namespace osuCrypto
             //lout << "in send cb with " << std::hex << u64(ctx) << std::endl;
             WolfSocket& sock = *(WolfSocket*)ctx;
             assert(sock.mSSL == ssl);
-            return sock.sslRquestSendCB(buf, size);
+            return sock.sslRequestSendCB(buf, size);
         }
     };
 
@@ -363,15 +287,5 @@ namespace osuCrypto
     extern std::array<u8, 0x68f> sample_server_key_pem;
     extern std::array<u8, 0x594> sample_dh2048_pem;
 
-}
-#else
-namespace osuCrypto
-{
-    struct TLSContext {
-        operator bool() const
-        {
-            return false;
-        }
-};
 }
 #endif

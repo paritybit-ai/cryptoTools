@@ -7,42 +7,78 @@
 #endif
 #include <fstream>
 
+#include "log.h"
 extern "C" {
 #include "wolfssl/error-ssl.h"
+#include <wolfssl/ssl.h>
 }
 
+namespace cryptoTools_network_tls {
+std::string WolfSSLErrCategory::message(int err) const
+{
+    std::array<char, WOLFSSL_MAX_ERROR_SZ> buffer;
+    if (err == 0) return "Success";
+    if (err == 1) return "Failure";
+    return wolfSSL_ERR_error_string(err, buffer.data());
+}
+} // namespace cryptoTools_network_tls
 namespace osuCrypto
 {
+    inline error_code wolfssl_error_code(int ret)
+    {
+        switch (ret)
+        {
+        case WOLFSSL_SUCCESS: return make_error_code(WolfSSL_errc::Success);
+        case WOLFSSL_FAILURE: return make_error_code(WolfSSL_errc::Failure);
+        default: return make_error_code(WolfSSL_errc(ret));
+        }
+    }
 
-    //namespace {
 
         //std::mutex mtx;
-        error_code readFile(const std::string& file, std::vector<u8>& buffer)
-        {
-            std::ifstream t(file);
+    error_code readFile(const std::string& file, std::vector<u8>& buffer)
+    {
+        std::ifstream t(file);
 
-            if (t.is_open() == false)
-                return boost::system::errc::make_error_code(boost::system::errc::no_such_file_or_directory);
+        if (t.is_open() == false)
+            return boost::system::errc::make_error_code(boost::system::errc::no_such_file_or_directory);
 
-            t.seekg(0, std::ios::end);
-            buffer.resize(0);
-            buffer.reserve(t.tellg());
-            t.seekg(0, std::ios::beg);
+        t.seekg(0, std::ios::end);
+        buffer.resize(0);
+        buffer.reserve(t.tellg());
+        t.seekg(0, std::ios::beg);
 
-            buffer.insert(buffer.end(), (std::istreambuf_iterator<char>(t)),
-                std::istreambuf_iterator<char>());
+        buffer.insert(buffer.end(), (std::istreambuf_iterator<char>(t)),
+                      std::istreambuf_iterator<char>());
 
 
-            //std::lock_guard<std::mutex> lock(mtx);
-            //std::cout << file << "\nstd::array<char, "<<buffer.size()<<"> name = {0x" << std::hex << int(buffer[0]);
+        //std::lock_guard<std::mutex> lock(mtx);
+        //std::cout << file << "\nstd::array<char, "<<buffer.size()<<"> name = {0x" << std::hex << int(buffer[0]);
 
-            //for (u64 i = 1; i < buffer.size(); ++i)
-            //    std::cout << ", 0x" << std::hex << int(buffer[i]);
-            //std::cout << "};\n";
+        //for (u64 i = 1; i < buffer.size(); ++i)
+        //    std::cout << ", 0x" << std::hex << int(buffer[i]);
+        //std::cout << "};\n";
 
-            return {};
-        }
-    //}
+        return {};
+    }
+
+    std::string WolfCertX509::commonName() {
+        return wolfSSL_X509_get_subjectCN(mCert);
+    }
+    std::string WolfCertX509::notAfter()
+    {
+        WOLFSSL_ASN1_TIME* ptr = wolfSSL_X509_get_notAfter(mCert);
+        std::array<char, 1024> buffer;
+        wolfSSL_ASN1_TIME_to_string(ptr, buffer.data(), buffer.size());
+        return buffer.data();
+    }
+    std::string WolfCertX509::notBefore()
+    {
+        WOLFSSL_ASN1_TIME* ptr = wolfSSL_X509_get_notBefore(mCert);
+        std::array<char, 1024> buffer;
+        wolfSSL_ASN1_TIME_to_string(ptr, buffer.data(), buffer.size());
+        return buffer.data();
+    }
 
     std::mutex WolfInitMtx;
 
@@ -139,7 +175,19 @@ namespace osuCrypto
         ec = wolfssl_error_code(
             wolfSSL_CTX_use_PrivateKey_buffer(*this, sk.data(), static_cast<long>(sk.size()), WOLFSSL_FILETYPE_PEM));
     }
+    
+    void WolfContext::setSNIName(const std::string& sni_name, error_code& ec) {
+        if (isInit() == false) {
+            ec = make_error_code(TLS_errc::ContextNotInit);
+            return;
+        }
+        ec = wolfssl_error_code(
+                wolfSSL_CTX_UseSNI(*this, WOLFSSL_SNI_HOST_NAME, sni_name.c_str(), (word16)sni_name.size()));
+    }
 
+    void WolfContext::NoneVerify() {
+        wolfSSL_CTX_set_verify(*this, SSL_VERIFY_NONE, 0);
+    }
     void WolfContext::requestClientCert(error_code& ec)
     {
         if (isInit() == false) 
@@ -154,7 +202,7 @@ namespace osuCrypto
     }
 
     WolfSocket::WolfSocket(boost::asio::io_context& ios, WolfContext& ctx)
-        : mSock(ios)
+        : Socket(ios)
         , mStrand(ios.get_executor())
         , mIos(ios)
         , mSSL(wolfSSL_new(ctx))
@@ -174,7 +222,7 @@ namespace osuCrypto
     }
 
     WolfSocket::WolfSocket(boost::asio::io_context& ios, boost::asio::ip::tcp::socket&& sock, WolfContext& ctx)
-        : mSock(std::move(sock))
+        : Socket(std::move(sock))
         , mStrand(ios.get_executor())
         , mIos(ios)
         , mSSL(wolfSSL_new(ctx))
@@ -184,6 +232,12 @@ namespace osuCrypto
 #endif
         wolfSSL_SetIOWriteCtx(mSSL, this);
         wolfSSL_SetIOReadCtx(mSSL, this);
+    }
+
+    WolfSocket::~WolfSocket()
+    {
+        close();
+        if (mSSL) wolfSSL_free(mSSL);
     }
 
     void WolfSocket::close()
@@ -303,14 +357,15 @@ namespace osuCrypto
 
     }
 
-    int WolfSocket::sslRquestSendCB(char* buf, int size)
+    int WolfSocket::sslRequestSendCB(char* buf, int size)
     {
-        LOG("sslRquestSendCB " + std::string(mState.hasPendingSend() ? "complete" : "init"));
+        LOG("sslRequestSendCB " + std::string(mState.hasPendingSend() ? "complete" : "init"));
 
         assert(mStrand.running_in_this_thread());
 
         if (mState.hasPendingSend() == false)
         {
+            // Log("info, wolf ssl send size:" << size);
             mState.mPendingSendBuf = { buf, size };
             buffer b(buf, size);
             boost::asio::async_write(mSock, b, [this](const error_code& ec, u64 bt) {
@@ -436,7 +491,7 @@ namespace osuCrypto
             int err = 0, ret = 0;
             //auto wasPending = mState.hasPendingRecv();
 
-            // this will call sslRequextRecvCB(...)
+            // this will call sslRequestRecvCB(...)
             ret = wolfSSL_read(mSSL, buf, static_cast<int>(size));
 
             if (ret <= 0)
@@ -489,14 +544,15 @@ namespace osuCrypto
         );
     }
 
-    int WolfSocket::sslRquestRecvCB(char* buf, int size)
+    int WolfSocket::sslRequestRecvCB(char* buf, int size)
     {
-        LOG("sslRquestRecvCB " + std::string(mState.hasPendingRecv() ? "complete" : "init"));
+        LOG("sslRequestRecvCB " + std::string(mState.hasPendingRecv() ? "complete" : "init"));
 
         assert(mStrand.running_in_this_thread());
 
         if (mState.hasPendingRecv() == false)
         {
+            // Log("info, recv size:" << size);
             mState.mPendingRecvBuf = { buf,  size };
             buffer b(buf, size);
             boost::asio::async_read(mSock, b, [this](const error_code& ec, u64 bt) {
@@ -545,21 +601,29 @@ namespace osuCrypto
         }
     }
 
+    /*
     void WolfSocket::connect(error_code& ec)
     {
         std::promise<error_code> prom;
-        async_connect([&prom](const error_code& ec) { prom.set_value(ec); });
-        ec = prom.get_future().get();
-    }
-
-    void WolfSocket::async_connect(completion_handle&& cb)
-    {
-        LOG("async_connect");
-
+        auto cb = [&prom](const error_code& ec) { prom.set_value(ec);}
+        LOG("connect");
         assert(mState.mPhase == WolfState::Phase::Uninit);
         mState.mPhase = WolfState::Phase::Connect;
         mSetupCB = std::move(cb);
         connectNext();
+        ec = prom.get_future().get();
+    }
+    */
+
+    void WolfSocket::async_connect(const boost::asio::ip::tcp::endpoint& address, completion_handle&& cb)
+    {
+        mSock.async_connect(address, [this, cb = cb] (const error_code& ec) {
+            LOG("async_connect");
+            assert(mState.mPhase == WolfState::Phase::Uninit);
+            mState.mPhase = WolfState::Phase::Connect;
+            mSetupCB = std::move(cb);
+            connectNext();
+        });
     }
 
 
@@ -624,23 +688,31 @@ namespace osuCrypto
         );
     }
 
+    /*
     void WolfSocket::accept(error_code& ec)
     {
         std::promise<error_code> prom;
-        async_accept([&prom](const error_code& ec) {
-            prom.set_value(ec);
-            }
-        );
-        ec = prom.get_future().get();
-    }
+        auto cb = [&prom](const error_code& ec) {prom.set_value(ec);}
 
-    void WolfSocket::async_accept(completion_handle&& cb)
-    {
-        LOG("async_accept");
+        LOG("accept");
         assert(mState.mPhase == WolfState::Phase::Uninit);
         mState.mPhase = WolfState::Phase::Accept;
         mSetupCB = std::move(cb);
         acceptNext();
+        ec = prom.get_future().get();
+    }
+    */
+
+    void WolfSocket::async_accept(boost::asio::ip::tcp::acceptor& acceptor, completion_handle&& cb)
+    {
+        acceptor.async_accept(mSock, [this, cb = cb](const error_code& ec){
+            std::cout << "-----wolf socket async_accept" << std::endl;
+            LOG("async_accept");
+            assert(mState.mPhase == WolfState::Phase::Uninit);
+            mState.mPhase = WolfState::Phase::Accept;
+            mSetupCB = std::move(cb);
+            acceptNext();
+        });
     }
 
     void WolfSocket::acceptNext()

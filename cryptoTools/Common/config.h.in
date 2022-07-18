@@ -25,6 +25,7 @@
 // Turn on Channel logging for debugging.
 #cmakedefine ENABLE_NET_LOG @ENABLE_NET_LOG@
 
+#cmakedefine ENABLE_BOOST_OPENSSL @ENABLE_BOOST_OPENSSL@
 
 // enable the wolf ssl socket layer.
 #cmakedefine ENABLE_WOLFSSL @ENABLE_WOLFSSL@

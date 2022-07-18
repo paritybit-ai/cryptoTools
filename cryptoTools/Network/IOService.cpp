@@ -18,6 +18,7 @@
 #include <sstream>
 #include "util.h"
 
+#include "log.h"
 namespace osuCrypto
 {
 
@@ -132,7 +133,7 @@ namespace osuCrypto
         boost::asio::dispatch(mStrand, [&]() {
             if (isListening())
             {
-                mPendingSockets.emplace_back(mIOService.mIoService);
+                mPendingSockets.emplace_back(mIOService.mIoService, mSession->mTLSContext);
                 auto sockIter = mPendingSockets.end(); --sockIter;
 
                 //#ifdef ENABLE_NET_LOG
@@ -142,7 +143,8 @@ namespace osuCrypto
                     " at " + mAddress.address().to_string() + " : " + std::to_string(mAddress.port()));
 
                 //BoostSocketInterface* newSocket = new BoostSocketInterface(mIOService.mIoService);
-                mHandle.async_accept(sockIter->mSock, [sockIter, this](const boost::system::error_code& ec)
+                // mHandle.async_accept(sockIter->mSock->mSock, [sockIter, this](const boost::system::error_code& ec)
+                sockIter->mSock->async_accept(mHandle, [sockIter, this](const boost::system::error_code& ec)
                     {
                         //std::cout << "async_accept cb socket#" + std::to_string(sockIter->mIdx) << " " << ec.message() <<  std::endl;
 
@@ -150,14 +152,7 @@ namespace osuCrypto
 
                         if (!ec)
                         {
-
-                            boost::asio::ip::tcp::no_delay option(true);
-                            boost::system::error_code ec2;
-                            sockIter->mSock.set_option(option, ec2);
-                            if (ec2)
-                                erasePendingSocket(sockIter);
-                            else
-                                sendServerMessage(sockIter);
+                            sendServerMessage(sockIter);
                         }
                         else
                         {
@@ -173,9 +168,12 @@ namespace osuCrypto
                             
                             // if the error code is not for operation canceled, print it to the terminal.
                             if (ec.value() != boost::asio::error::operation_aborted && mIOService.mPrint)
+                            {
                                 std::cout << "Acceptor.listen failed for socket#" << std::to_string(sockIter->mIdx) << " at port "<< mPort 
                                     << " ~~ " << ec.message() << " " << ec.value() << std::endl;
-
+                                Log("Acceptor.listen failed for socket#" << std::to_string(sockIter->mIdx) 
+                                << "at port "<< mPort << " ~~ " << ec.message() << " " << ec.value());
+                            }
                             erasePendingSocket(sockIter);
                         }
                     });
@@ -194,8 +192,9 @@ namespace osuCrypto
         boost::asio::dispatch(mStrand, [&, sockIter]() {
 
             boost::system::error_code ec3;
-            sockIter->mSock.close(ec3);
-
+            if (sockIter->mSock) {
+                sockIter->mSock->mSock.close(ec3);
+            }
             mPendingSockets.erase(sockIter);
             if (stopped() && mPendingSockets.size() == 0)
                 mPendingSocketsEmptyProm.set_value();
@@ -206,11 +205,15 @@ namespace osuCrypto
     {
         sockIter->mBuff.resize(1);
         sockIter->mBuff[0] = 'q';
-        auto buffer = boost::asio::buffer((char*)sockIter->mBuff.data(), sockIter->mBuff.size());
+        boost::asio::mutable_buffer buffers[1];
+        buffers[0] = boost::asio::buffer((char*)sockIter->mBuff.data(), sockIter->mBuff.size());
 
-        sockIter->mSock.async_send(buffer, [this, sockIter](const error_code& ec, u64 bytesTransferred) {
-            if (ec || bytesTransferred != 1)
+        Log("----server send message q");
+        sockIter->mSock->async_send(buffers, [this, sockIter](const error_code& ec, u64 bytesTransferred) {
+            if (ec) {
+                Log("To erase pending socket, ec:" << ec.message());
                 erasePendingSocket(sockIter);
+            }
             else
                 recvConnectionString(sockIter);
 
@@ -221,32 +224,34 @@ namespace osuCrypto
     void Acceptor::recvConnectionString(std::list<details::PendingSocket>::iterator sockIter)
     {
         LOG_MSG("Connected with socket#" + std::to_string(sockIter->mIdx));
-
+        Log("Connected with socket#" + std::to_string(sockIter->mIdx));
 
         sockIter->mBuff.resize(sizeof(u32));
-        auto buffer = boost::asio::buffer((char*)sockIter->mBuff.data(), sockIter->mBuff.size());
-        sockIter->mSock.async_receive(buffer,
+        boost::asio::mutable_buffer buffers[1];
+        buffers[0] = boost::asio::buffer((char*)sockIter->mBuff.data(), sockIter->mBuff.size());
+        sockIter->mSock->async_recv(buffers,
             [sockIter, this](const boost::system::error_code& ec, u64 bytesTransferred)
             {
                 if (!ec)
                 {
                     LOG_MSG("Recv header with socket#" + std::to_string(sockIter->mIdx));
+                    Log("Recv header with socket#" + std::to_string(sockIter->mIdx));
 
                     auto size = *(u32*)sockIter->mBuff.data();
+                    Log("Recv header size:" << size);
 
                     sockIter->mBuff.resize(size);
-                    auto buffer = boost::asio::buffer((char*)sockIter->mBuff.data(), sockIter->mBuff.size());
+                    boost::asio::mutable_buffer buffers[1];
+                    buffers[0] = boost::asio::buffer((char*)sockIter->mBuff.data(), sockIter->mBuff.size());
 
-                    sockIter->mSock.async_receive(buffer,
+                    sockIter->mSock->async_recv(buffers,
                         bind_executor(mStrand, [sockIter, this](const boost::system::error_code& ec3, u64 bytesTransferred2) {
                             if (!ec3)
                             {
                                 LOG_MSG("Recv boby with socket#" + std::to_string(sockIter->mIdx) + " ~ " + sockIter->mBuff);
 
-                                asyncSetSocket(
-                                    std::move(sockIter->mBuff),
-                                    std::unique_ptr<BoostSocketInterface>(
-                                        new BoostSocketInterface(std::move(sockIter->mSock))));
+                                Log("recvConnectionString, to async setSocket");
+                                asyncSetSocket(std::move(sockIter->mBuff), std::move(sockIter->mSock));
                             }
                             else
                             {
@@ -254,8 +259,9 @@ namespace osuCrypto
                                 ss << "socket header body failed: " << ec3.message() << std::endl;
                                 mIOService.printError(ss.str());
                                 LOG_MSG("Recv body failed with socket#" + std::to_string(sockIter->mIdx) + " ~ " + ec3.message());
+                                Log("recvConnectionString, Recv body failed, message:" << ec3.message());
                             }
-
+ 
                             erasePendingSocket(sockIter);
                             }
                         )
@@ -274,6 +280,7 @@ namespace osuCrypto
                     }
 
                     LOG_MSG("Recv header failed with socket#" + std::to_string(sockIter->mIdx) + " ~ " + ec.message());
+                    Log("Recv header failed, message:" << ec.message());
 
                     erasePendingSocket(sockIter);
                 }
@@ -303,7 +310,7 @@ namespace osuCrypto
 
                     // cancel any sockets which have not completed the handshake.
                     for (auto& pendingSocket : mPendingSockets)
-                        pendingSocket.mSock.close();
+                        pendingSocket.mSock->mSock.close();
 
                     // if there were no pending sockets, set the promise
                     if (mPendingSockets.size() == 0)
@@ -437,6 +444,10 @@ namespace osuCrypto
             }
             else
             {
+                // 多个session，只会使用第一个session的tls context，使用方必须保证session的context一样
+                if (!mSession) {
+                    mSession = session;
+                }
                 mGroups.emplace_back(std::make_shared<details::SessionGroup>());
                 auto iter = mGroups.end(); --iter;
                 auto& group = *iter;
@@ -684,17 +695,17 @@ namespace osuCrypto
 
     void Acceptor::asyncSetSocket(
         std::string name,
-        std::unique_ptr<BoostSocketInterface> s)
+        std::unique_ptr<Socket> s)
     {
         auto ss = s.release();
         boost::asio::dispatch(mStrand, [this, name, ss]() {
-            std::unique_ptr<BoostSocketInterface> sock(ss);
+            std::unique_ptr<Socket> sock(ss);
 
             auto names = split(name, '`');
 
             if (names.size() != 4)
             {
-                std::cout << "bad channel name: " << name << "\nDropping the connection" << std::endl;
+                Log("bad channel name:" << name << ", Dropping the connection");
                 LOG_MSG("socket " + name + " has a bad name. Connection dropped");
                 return;
             }
@@ -703,6 +714,7 @@ namespace osuCrypto
             auto sessionID = std::stoull(names[1]);
             auto& remoteName = names[2];
             auto& localName = names[3];
+            Log("Server recv name:" << name);
 
             details::NamedSocket socket;
             socket.mLocalName = localName;
@@ -974,6 +986,9 @@ namespace osuCrypto
                     mAcceptors.emplace_back(*this);
                     acceptorIter = mAcceptors.end(); --acceptorIter;
                     acceptorIter->mPort = session->mPort;
+                } else {
+                    // 多个session，只会使用第一个session的tls context，使用方必须保证session的context一样
+                    Log("Warning:" << "One Session use same acceptor, port:" << session->mPort);
                 }
 
                 acceptorIter->asyncSubscribe(session, [&](const error_code& ec) {

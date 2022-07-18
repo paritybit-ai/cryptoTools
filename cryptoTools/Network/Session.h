@@ -11,6 +11,7 @@
 #include <mutex>
 #include <memory>
 #include "TLS.h"
+#include "cryptoTools/Network/OpenTLS.h"
 #include "util.h"
 
 namespace osuCrypto {
@@ -23,6 +24,24 @@ namespace osuCrypto {
 
 	typedef SessionMode EpMode;
 
+    bool InitRealSession(IOService& ioService,
+                          const std::string& remoteIP,
+                          u32 port,
+                          SessionMode type);
+    bool InitRealSession(IOService& ioService,
+                          const std::string& remoteIP,
+                          u32 port,
+                          SessionMode type,
+                          TLSContext& tls);
+    void StopSessions();
+    void StopSession(SessionMode type, const std::string& ip, u32 port);
+    // TODO: 添加全局AddChannel
+    inline Channel AddChannel(SessionMode type, const std::string& ip, u32 port, std::string localName, std::string remoteName) {}
+    bool AddVirToRealSessionMapping(SessionMode type,
+                                    const std::string& vir_ip,
+                                    u32 vir_port,
+                                    const std::string& real_ip,
+                                    u32 real_port);
     class Session
     {
     public:
@@ -55,6 +74,10 @@ namespace osuCrypto {
 		// Default constructor
 		Session();
 
+        // for port mapping, to construct real session
+        // flage参数为了区分其他构造函数
+        Session(IOService & ioService, std::string remoteIP, u32 port, SessionMode type, TLSContext& tls, bool flage);
+
 		Session(const Session&);
 		Session(Session&&) = default;
 
@@ -71,6 +94,9 @@ namespace osuCrypto {
         // Adds a new channel (data pipe) between this endpoint and the remote. The channel is named at each end.
         Channel addChannel(std::string localName = "", std::string remoteName = "");
 
+        // virtual session called, to add a new channel from real session;
+        Channel addChannel(u32 port, const std::string& localName, const std::string& remoteName);
+
         // Stops this Session.
 		void stop(/*const std::optional<std::chrono::milliseconds>& waitTime = {}*/);
 
@@ -84,6 +110,12 @@ namespace osuCrypto {
 		bool isHost() const;
 
 		std::shared_ptr<SessionBase> mBase;
+
+    public:
+        // Only virtual session can use;
+        u32 port_{0};
+        SessionMode type_;
+        std::string remote_ip_;
     };
 
 	typedef Session Endpoint;
@@ -123,13 +155,6 @@ namespace osuCrypto {
 		std::string mName;
 
 		u64 mSessionID = 0;
-
-#ifdef ENABLE_WOLFSSL
-		std::mutex mTLSSessionIDMtx;
-		bool mTLSSessionIDIsSet = false;
-		block mTLSSessionID;
-#endif
-
 		boost::asio::ip::tcp::endpoint mRemoteAddr;
 	};
 

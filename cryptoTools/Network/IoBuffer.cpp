@@ -6,6 +6,7 @@
 #include "IOService.h"
 #include <sstream>
 #include <exception>
+#include "log.h"
 
 namespace osuCrypto
 {
@@ -21,10 +22,14 @@ namespace osuCrypto
 
             //    lout << base->mLog << std::endl;
             //}
-
+            // Log("send asyncPerform");
             base->mSendBuffers = getSendBuffer();
-            base->mHandle->async_send(base->mSendBuffers, 
-                std::forward<io_completion_handle>(completionHandle));
+            if (base->mHandle) {
+                base->mHandle->async_send(base->mSendBuffers, 
+                    std::forward<io_completion_handle>(completionHandle));
+            } else {
+                Log("no base->mHandle");
+            }
         }
 
         void FixedRecvBuff::asyncPerform(ChannelBase * base, io_completion_handle&& completionHandle)
@@ -38,6 +43,7 @@ namespace osuCrypto
 
             // first we have to receive the header which tells us how much.
             base->mRecvBuffer = getRecvHeaderBuffer();
+            // Log("recv asyncPerform");
             base->mHandle->async_recv({&base->mRecvBuffer, 1}, [this](const error_code& ec, u64 bt1) {
                 
                 if (!ec)
@@ -77,8 +83,9 @@ namespace osuCrypto
                     {
 
                         if (!ec) mPromise.set_value();
-                        else mPromise.set_exception(std::make_exception_ptr(std::runtime_error(ec.message())));
-                        
+                        else {
+                            mPromise.set_exception(std::make_exception_ptr(std::runtime_error(ec.message())));
+                        }
                         if (!mComHandle)
                             throw std::runtime_error(LOCATION);
 

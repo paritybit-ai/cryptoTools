@@ -2,6 +2,7 @@
 #include <cryptoTools/Common/config.h>
 #ifdef ENABLE_BOOST
 
+#include <boost/lexical_cast.hpp>
 #include <cryptoTools/Network/Channel.h>
 #include <cryptoTools/Network/Session.h>
 #include <cryptoTools/Network/SocketAdapter.h>
@@ -10,6 +11,7 @@
 #include <cryptoTools/Network/IOService.h>
 #include <thread>
 #include <chrono>
+#include "log.h"
 
 namespace osuCrypto {
 
@@ -23,7 +25,6 @@ namespace osuCrypto {
 #define LOG_MSG(m)
 #define IF_LOG(m) 
 #endif
-
     auto startTime = std::chrono::system_clock::time_point::clock::now();
 
     std::string time()
@@ -172,17 +173,6 @@ namespace osuCrypto {
                 mTimer.cancel();
                 mCanceled = true;
 
-#ifdef ENABLE_WOLFSSL
-                if (mTLSSock)
-                {
-                    // If this unique_ptr is set, then we are 
-                    // currently doing the TLS handshake. Calling
-                    // close on it will cancel the operation and
-                    // then it will call finalize with an error.
-                    mTLSSock->close();
-                }
-                else 
-#endif
                 if (mChl->mSession->mAcceptor)
                 {
                     // If we are still waiting for the socket from 
@@ -195,19 +185,19 @@ namespace osuCrypto {
                     // If this unique_ptr is set then we are currently
                     // trying to connect to the server, calling close
                     // will cancel this operation.
-                    error_code ec;
-                    mSock->mSock.close(ec);
+                    mSock->close();
                 }
             }
             }
         );
     }
 
-    void StartSocketOp::setSocket(std::unique_ptr<BoostSocketInterface> socket, const error_code& ec)
+    void StartSocketOp::setSocket(std::unique_ptr<Socket> socket, const error_code& ec)
     {
         IF_LOG(mChl->mLog.push("Recved socket="+std::to_string(socket != nullptr)
             +", starting up the queues..."));
 
+        Log("trace: setSocket");
         boost::asio::post(mStrand, [this, ec, s = std::move(socket)]() mutable {
 
             if (canceled() && s)
@@ -227,93 +217,12 @@ namespace osuCrypto {
                 }
             }
 
-#ifdef ENABLE_WOLFSSL
-            if (mChl->mSession->mTLSContext && !ec)
-            {
-                assert(s && "socket was null but no error code");
-                
-                mTLSSock.reset(new TLSSocket(mChl->mIos.mIoService, std::move(s->mSock), mChl->mSession->mTLSContext));
-                
-                IF_LOG(mTLSSock->setLog(mChl->mLog));
-
-                if (mChl->mSession->mMode == SessionMode::Client)
-                {
-                    IF_LOG(mChl->mLog.push("tls async_connect()"));
-                    mTLSSock->async_connect([this](const error_code& ec) 
-                    {
-                        //validateID(mTL)
-                        //TODO("send a hash of the connection string to make sure that things have not changed by the Adv.");
-
-                        IF_LOG(mChl->mLog.push("tls async_connect() done, " + ec.message()));
-                        validateTLS(ec);
-                    });
-                }
-                else
-                {
-                    IF_LOG(mChl->mLog.push("tls async_accept() " + ec.message()));
-                    mTLSSock->async_accept([this](const error_code& ec) {
-                        IF_LOG(mChl->mLog.push("tls async_accept() done, " + ec.message()));
-                        validateTLS(ec);
-                    });
-                }
-                //mChl->mSession->mTLSContext.
-            }
-            else
-#endif
-            {
-                finalize(std::move(s), ec);
-            }
+            Log("To finalize sock");
+            finalize(std::move(s), ec);
 
         }
         );
     }
-
-#ifdef ENABLE_WOLFSSL
-    void StartSocketOp::validateTLS(const error_code& ec)
-    {
-        boost::asio::dispatch(mStrand, [this, ec]{
-
-            if (ec || canceled())
-            {
-                finalize(std::move(mTLSSock), ec);
-            }
-            else
-            {
-                std::array<boost::asio::mutable_buffer,1> buf;
-              
-                if(mChl->mSession->mMode == SessionMode::Client)
-                {
-                    buf[0] = boost::asio::mutable_buffer((char*)&mChl->mSession->mTLSSessionID, sizeof(mChl->mSession->mTLSSessionID)); 
-                    mTLSSock->async_send(buf, [this](const error_code& ec, u64 bt){
-                        finalize(std::move(mTLSSock), ec);
-                    });
-                } 
-                else 
-                {
-                    
-                    buf[0] = boost::asio::mutable_buffer((char*)&mTLSSessionIDBuf, sizeof(mTLSSessionIDBuf)); 
-                    mTLSSock->async_recv(buf, [this](const error_code& ec_, u64 bt){
-                        auto ec = ec_;
-
-                        if(!ec)
-                        {
-                            std::lock_guard<std::mutex> lock(mChl->mSession->mTLSSessionIDMtx);
-                            if(mChl->mSession->mTLSSessionIDIsSet == false)
-                            {
-                                mChl->mSession->mTLSSessionIDIsSet = true;
-                                mChl->mSession->mTLSSessionID = mTLSSessionIDBuf;
-                            } 
-                            else if(neq(mTLSSessionIDBuf, mChl->mSession->mTLSSessionID))
-                                ec = make_error_code(TLS_errc::SessionIDMismatch);
-                        } 
-                        
-                        finalize(std::move(mTLSSock), ec);
-                    });
-                }
-            }
-        });
-    }
-#endif
 
     void StartSocketOp::finalize(std::unique_ptr<SocketInterface> sock, error_code ec)
     {
@@ -342,6 +251,7 @@ namespace osuCrypto {
                 mRecvStatus = ComHandleStatus::Eval;
                 mRecvComHandle(mEC, 0);
             }
+
             }
         );
     }
@@ -357,9 +267,15 @@ namespace osuCrypto {
         IF_LOG(mChl->mLog.push("start async connect to server at " +
             address.address().to_string() + " : " + std::to_string(address.port())));
 
-        //if(!mSock)
-        mSock.reset(new BoostSocketInterface(
-            boost::asio::ip::tcp::socket(mChl->getIOService().mIoService)));
+#if defined ENABLE_WOLFSSL || defined ENABLE_BOOST_OPENSSL
+        if (mChl->mSession->mTLSContext) {
+            mSock.reset(new TLSSocket(mChl->getIOService().mIoService, mChl->mSession->mTLSContext));
+        } else
+#endif
+        {
+            mSock.reset(new BoostSocketInterface(
+                                                 boost::asio::ip::tcp::socket(mChl->getIOService().mIoService)));
+        }
 
         auto count = static_cast<u64>(mBackoff) * 100;
         mBackoff = std::min(mBackoff * 1.2, 1000.0);
@@ -374,23 +290,22 @@ namespace osuCrypto {
             boost::asio::dispatch(mStrand, [this](){
                 if (mIsFirst) {
                     // timed out.
-                    error_code ec;
-                    mSock->mSock.cancel(ec);
+                    // error_code ec;
+                    // mSock->mSock.cancel(ec);
+                    mSock->cancel();
                     IF_LOG(mChl->mLog.push("async_connect time out. "));
-                }
-                else {
-                    connectCallback(mConnectEC);
                 }
                 mIsFirst = false;
             });
         });
 
-        mSock->mSock.async_connect(address, [this](const error_code& ec){
+        mSock->async_connect(address,  [this](const error_code& ec) {
             boost::asio::dispatch(mStrand, [this, ec](){
                 mConnectEC = ec;
                 if(mIsFirst)
                 {
                     mTimer.cancel();
+                    connectCallback(ec);
                 }
                 else
                 {
@@ -403,67 +318,40 @@ namespace osuCrypto {
 
     }
 
-    void StartSocketOp::connectCallback(const error_code& ec)
-    {
-        //IF_LOG(mChl->mLog.push("calling StartSocketOp::asyncConnectToServer(...) cb1 "));
-
+    void StartSocketOp::connectCallback(const error_code& ec) {
         boost::asio::dispatch(mStrand, [this, ec] {
-            // lout << "calling StartSocketOp::asyncConnectToServer(...) cb1 " << time() << std::endl;
-
-            IF_LOG(mChl->mLog.push("in StartSocketOp::asyncConnectToServer(...) cb1 "
-                + ec.message()));
-
-            auto& sock = mSock->mSock;
-
-            if (ec)
-            {
+            if (ec) {
+                Log("To retry connect, ec:" << ec.message());
                 retryConnect(ec);
+                return;
             }
-            else
-            {
-                boost::asio::ip::tcp::no_delay option(true);
-                error_code ec2;
-                sock.set_option(option, ec2);
-
-                if (ec2)
-                {
-                    IF_LOG(
-                    auto msg = "async connect. Failed to set option ~ ec=" + ec2.message() + "\n"
-                        + " isOpen=" + std::to_string(sock.is_open())
-                        + " stopped=" + std::to_string(canceled());
-                    mChl->mLog.push(msg));
-
-                    // retry.
-                    retryConnect(ec2);
-                }
-                else
-                {
-                    recvServerMessage();
-                }
-            }
-            }
-        );
+            recvServerMessage();
+        });
     }
-    
+
     void StartSocketOp::recvServerMessage()
     {
-        auto buffer = boost::asio::buffer((char*)&mRecvChar, 1);
-        auto& sock = mSock->mSock;
+        Log("trace: recvServerMessage");
+        boost::asio::mutable_buffer buffers[1];
+        buffers[0] = boost::asio::buffer((char*)&mRecvChar, 1);
 
-        sock.async_receive(buffer, [this](const error_code& ec, u64 bytesTransferred) {
+        mSock->async_recv(buffers, [this](const error_code& ec, u64 bytesTransferred) {
             boost::asio::dispatch(mStrand, [this, ec, bytesTransferred] {
 
-                if (ec || bytesTransferred != 1)
+                if (ec)
                 {
+                    Log("To retry connect, ec:" << ec.message());
                     retryConnect(ec);
                 }
                 else if (mRecvChar != 'q')
                 {
                     auto ec2 = boost::system::errc::make_error_code(boost::system::errc::operation_canceled);
+                    Log("recv server message, no q, message: " << (int)mRecvChar);
                     setSocket(nullptr, ec2);
                 }
                 else
                 {
+                    Log("recv server message q");
                     sendConnectionString();
                 }
                 }
@@ -486,19 +374,20 @@ namespace osuCrypto {
         *(details::size_header_type*)mSendBuffer.data()
             = static_cast<details::size_header_type>(str.size());
 
+        Log("sendConnectionString, send size:" << str.size() << ", str:" << str);
         std::copy(str.begin(), str.end(), mSendBuffer.begin() + sizeof(details::size_header_type));
 
 
         IF_LOG(mChl->mLog.push("Success: async connect to server. ConnectionString = " \
             + str + " " + std::to_string((u64) & *mChl->mHandle)));
 
-        auto buffer = boost::asio::buffer((char*)mSendBuffer.data(), mSendBuffer.size());
-        auto& sock = mSock->mSock;;
+        boost::asio::mutable_buffer buffers[1];
+        buffers[0] = boost::asio::buffer((char*)mSendBuffer.data(), mSendBuffer.size());
 
-        sock.async_send(buffer, [this](const error_code& ec, u64 bytesTransferred) {
+        mSock->async_send(buffers, [this](const error_code& ec, u64 bytesTransferred) {
             boost::asio::dispatch(mStrand, [this, ec, bytesTransferred] {
 
-                if (ec || bytesTransferred != mSendBuffer.size())
+                if (ec)
                 {
 
                     IF_LOG(
@@ -507,9 +396,11 @@ namespace osuCrypto {
                         + " isOpen=" + std::to_string(sock.is_open())
                         + " canceled=" + std::to_string(canceled());
 
+                        Log(msg);
                         mChl->mLog.push(msg)
                     );
 
+                    Log("sendConnectionString to retry connect, ec:" <<  ec.message());
                     // Unknown issue where we connect but then the pipe is broken. 
                     // Simply retrying seems to be a workaround.
                     retryConnect(ec);
@@ -548,7 +439,8 @@ namespace osuCrypto {
                 case boost::system::errc::connection_refused:
                     break;
                 default:
-                    mChl->mIos.printError("client socket connect error: " + ec.message());
+                    mChl->mIos.printError(__FILE__ + std::to_string(__LINE__) + "client socket connect error: " + ec.message());
+                    Log("client socket connect error: " + ec.message());
                 }
 
             }
@@ -568,8 +460,6 @@ namespace osuCrypto {
             );
         }
     }
-
-
 
 
 
@@ -700,7 +590,7 @@ namespace osuCrypto {
 
     std::string ChannelBase::commonName()
     {
-#ifdef ENABLE_WOLFSSL
+#if defined ENABLE_WOLFSSL
         auto tls = dynamic_cast<TLSSocket*>(mHandle.get());
         if (tls)
             return tls->getCert().commonName();
@@ -866,13 +756,14 @@ namespace osuCrypto {
                     }
                     else
                     {
+                        Log("net send error: " + ec.message());
                         if (mIos.mPrint)
                         {
                             auto reason = std::string("network send error: ") + ec.message() + "\n at  " + LOCATION;
                             lout << reason << std::endl;
                         }
 
-                        LOG_MSG("net senmd error: " + ec.message());
+                        LOG_MSG("net send error: " + ec.message());
                         mSendQueue.pop_front();
                         cancelSendQueue(ec);
                     }
@@ -881,6 +772,7 @@ namespace osuCrypto {
         }
         else
         {
+            Log("To cancelSendQueue");
             auto ec = boost::system::errc::make_error_code(boost::system::errc::operation_canceled);
             cancelSendQueue(ec);
         }
@@ -999,6 +891,7 @@ namespace osuCrypto {
     void ChannelBase::asyncClose(std::function<void()> completionHandle)
     {
         LOG_MSG("Closing...");
+        Log("Closing...")
 
         if (stopped() == false)
         {
@@ -1007,7 +900,6 @@ namespace osuCrypto {
             auto lifetime = shared_from_this();
             auto count = std::make_shared<std::atomic<u32>>(2);
             auto cb = [&, ch = std::move(completionHandle), count,lifetime]() mutable {
-
                 if(--*count == 0)
                 {
                     mStatus = Channel::Status::Closed;
@@ -1025,7 +917,6 @@ namespace osuCrypto {
                 }
             };
 
-
             sendEnque(make_SBO_ptr<details::SendOperation, details::SendCallbackOp>(cb));
             recvEnque(make_SBO_ptr<details::RecvOperation, details::RecvCallbackOp>(cb));
      
@@ -1037,6 +928,7 @@ namespace osuCrypto {
             {
                 lout << "Warning, asyncClose() called on a canceling or closing channel." << std::endl;
             }
+            Log("stopped is true");
             completionHandle();
         }
     }
@@ -1059,7 +951,7 @@ namespace osuCrypto {
 
                 boost::asio::dispatch(mStrand, [this, ec]() {
                     IF_LOG(auto& front = mSendQueue.front());
-                    LOG_MSG("send cancel op: " + std::to_string(front->mIdx));
+                    LOG_MSG("send cancel op: " + std::to_string(mSendQueue.front()->mIdx));
                     mSendQueue.pop_front();
 
        
